@@ -1,6 +1,6 @@
 # IS CLIMATE CHANGE RELEVANT FOR THE REAL ESTATE MARKET? A MACHINE LEARNING APPROACH
 
-This is the repository of the paper (working in progress): Is Climate Change Relevant For The Real Estate Market? A Machine Learning Approach
+This is the repository of the paper (work in progress): Is Climate Change Relevant For The Real Estate Market? A Machine Learning Approach
 
 ## Authors
 
