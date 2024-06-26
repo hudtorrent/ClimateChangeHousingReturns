@@ -1,0 +1,585 @@
+---
+title: "Forecasting Real Housing Price Returns of the United States Jo using Machine Learning: The Role of Climate Risks"
+format:
+  html:
+    theme:
+      light: cerulean
+      dark: slate  
+    smaller: true
+    lang: pt-br
+    embed-resources: true
+    html-math-method: katex
+    self-contained-math: false
+---
+
+<div style="text-align: justify">
+
+<style>
+body {
+text-align: justify}
+</style>
+
+
+```{r}
+#| echo: false
+#| eval: true
+#| message: false
+#| warning: false
+
+library(quarto)
+library(tidyverse)
+library(exams)
+library(knitr)
+library(kableExtra)
+library(openxlsx)
+
+# Auxiliar files
+
+rm(list = ls())
+
+source("functions_results.r")
+```
+
+# Forecasting approach
+
+## Inicial parameters
+
+```{r}
+# Models, forecast horizons and lags
+
+ind_models <- 1:6 # models from m1 to m6
+n_lags <- 48 # number of lags
+pad <- TRUE # standardization
+for_hor_can <- c(1, seq(from = 6, to = 48, by = 6))
+n_windows <- 516 # out-of-sample size
+```
+
+```{r, quarto_file_gen}
+#| echo: false
+#| eval: false
+
+out_file_name <- paste(
+  f_model_name_results(ind_models, n_lags, for_hor_can, n_windows, pad),
+  ".html",
+  sep = ""
+)
+
+quarto::quarto_render(
+  input = "results.rmd",
+  output_format = "html",
+  output_file = out_file_name
+)
+```
+
+
+- The forecasting approach can be view as a L2-boosting method applied to an AR-direct (plus exogenous variables) model:
+$$
+  y_{t} = \beta_0 + \beta_h y_{t-h} + \cdots \beta_{h+`r n_lags`} y_{t-h-`r n_lags`} + \vec{x}_{t-h}^{\intercal} \vec{\delta}_{h} + \cdots + \vec{x}_{t-h-`r n_lags`}^{\intercal} \vec{\delta}_{h+`r n_lags`},
+$$
+where $\vec{x}$ contains the *exogenous* regressors.
+- Note that we allow for `r n_lags` lags for each variable.
+- We consider $h = `r paste(for_hor_can, sep = "", collapse = ", ")`.$
+
+# Results
+
+```{r}
+#| echo: false
+
+list_workspace <- vector(mode = "list", length = length(for_hor_can))
+names(list_workspace) <- paste("h", for_hor_can, sep = "")
+
+for (i in seq_along(for_hor_can)) {
+  for_hor <- for_hor_can[i]
+
+  file_name_load <- paste(
+    "../h",
+    for_hor,
+    "/",
+    f_model_name(ind_models, n_lags, for_hor, n_windows, pad),
+    ".rda",
+    sep = ""
+  )
+
+  load(file_name_load)
+
+  list_workspace[[i]] <- list(
+    var_imp_list = var_imp_list,
+    forecast_mat = forecast_mat,
+    csfe_mat = csfe_mat,
+    y_out = y_out
+  )
+}
+```
+
+## RMSE
+
+- The table below presents the RMSE for the six models considered for each forecast horizon.
+- Values in blue denote the lowest RMSE for each forecast horizon.
+
+```{r}
+#| echo: false
+
+rmse_table <- matrix(NA, nrow = length(for_hor_can), ncol = length(ind_models))
+
+colnames(rmse_table) <- paste("m", ind_models, sep = "")
+rownames(rmse_table) <- paste("h", for_hor_can, sep = "")
+
+for (i in seq_along(for_hor_can)) {
+
+  rmse_table[i, ] <- apply(
+    X = list_workspace[[i]]$forecast_mat,
+    MARGIN = 2,
+    FUN = f_rmse,
+    y = y_out
+  )
+
+}
+
+rmse_table_kable <- rmse_table %>%
+  round(4) %>%
+  t() %>%
+  as.data.frame() %>%
+  mutate(
+    across(
+      everything(),
+      ~cell_spec(
+        .x,
+        color = ifelse(
+          .x == min(.x),
+          "blue",
+          "black"
+        )
+      )
+    )
+  )
+
+kable(rmse_table_kable)
+
+# Saving
+
+openxlsx::write.xlsx(
+  x = data.frame(t(rmse_table)),
+  file = "../Tables/xlsx/rmse_table.xlsx",
+  asTable = TRUE,
+  rowNames = TRUE,
+  colNames = TRUE
+)
+
+write.csv(
+  x = data.frame(t(rmse_table)),
+  file = "../Tables/csv/rmse_table.csv"
+)
+```
+
+## Variable Selection
+
+```{r}
+#| echo: false
+
+n_imp_var <- 15
+```
+
+- The tables below show the `r n_imp_var` most frequently selected variables for each forecast horizon.
+
+```{r, results="asis", scale = 0.3}
+#| echo: false
+
+f_most_sel <- function(x) {
+  res <- paste(
+    names(x), " ",
+    round(100 * x, 2), "%",
+    sep = ""
+  )
+  return(res)
+}
+
+f_most_sel_table <- function(for_hor) {
+
+  i <- which(for_hor_can == for_hor)
+
+  var_sel_table <- matrix(
+    data = NA,
+    nrow = n_imp_var,
+    ncol = length(ind_models)
+  )
+  colnames(var_sel_table) <- paste("m", ind_models, sep = "")
+  rownames(var_sel_table) <- paste(seq_len(n_imp_var))
+
+  for (k in seq_along(ind_models)) {
+
+    mat_var_imp_aux <- list_workspace[[i]]$var_imp_list[[k]]
+
+    mat_sel_aux <- matrix(
+      data = NA,
+      nrow = length(mat_var_imp_aux),
+      ncol = length(mat_var_imp_aux[[1]])
+    )
+
+    colnames(mat_sel_aux) <- names(mat_var_imp_aux[[1]])
+
+    for (j in seq_along(mat_var_imp_aux)) {
+      mat_sel_aux[j, ] <- as.numeric(mat_var_imp_aux[[j]] != 0)
+    }
+
+    most_sel_var <- apply(mat_sel_aux, 2, mean) %>% sort(decreasing = TRUE)
+
+    var_sel_table[, k] <- f_most_sel(most_sel_var)[1:n_imp_var]
+  }
+  return(var_sel_table)
+}
+
+for (i in for_hor_can) {
+  kable(
+    x = f_most_sel_table(i),
+    caption = paste("H = ", i, sep = "")
+  ) %>%
+    print() %>%
+    cat("\n")
+}
+```
+
+```{r, echo=FALSE}
+f_most_sel_exp <- function(x) {
+  res <- c(
+    paste(names(x)),
+    paste(round(100 * x, 2), "%", sep = "")
+  ) %>% matrix(nrow = 2, byrow = TRUE) %>% as.vector()
+  return(res)
+}
+
+f_most_sel_table_exp <- function(for_hor) {
+
+  i <- which(for_hor_can == for_hor)
+
+  var_sel_table <- NULL
+
+  for (k in seq_along(ind_models)) {
+
+    mat_var_imp_aux <- list_workspace[[i]]$var_imp_list[[k]]
+
+    mat_sel_aux <- matrix(
+      data = NA,
+      nrow = length(mat_var_imp_aux),
+      ncol = length(mat_var_imp_aux[[1]])
+    )
+
+    colnames(mat_sel_aux) <- names(mat_var_imp_aux[[1]])
+
+    for (j in seq_along(mat_var_imp_aux)) {
+      mat_sel_aux[j, ] <- as.numeric(mat_var_imp_aux[[j]] != 0)
+    }
+
+    most_sel_var <- apply(mat_sel_aux, 2, mean) %>% sort(decreasing = TRUE)
+
+    var_sel_table <- cbind(
+      var_sel_table,
+      (
+        f_most_sel_exp(most_sel_var) %>%
+          matrix(ncol = 2, byrow = TRUE)
+      )[1:n_imp_var, ]
+    )
+  }
+
+  colnames(var_sel_table) <- c(
+    paste(
+      paste("m", rep(ind_models, each = 2), sep = ""),
+      c("_name", "_freq"),
+      sep = ""
+    )
+  )
+  rownames(var_sel_table) <- paste(seq_len(n_imp_var))
+
+  return(var_sel_table)
+}
+
+# Loop
+
+list_xlsx <- vector(mode = "list", length = length(for_hor_can))
+names(list_xlsx) <- paste("hor_", for_hor_can, sep = "")
+
+for (i in seq_along(for_hor_can)) {
+  kable(
+    x = f_most_sel_table_exp(for_hor_can[i]),
+    caption = paste("H = ", for_hor_can[i], sep = "")
+  ) %>%
+    print() %>%
+    cat("\n")
+
+  # Saving
+
+  list_xlsx[[i]] <- f_most_sel_table_exp(for_hor_can[i]) %>% data.frame()
+
+  write.csv(
+    x = f_most_sel_table_exp(for_hor_can[i]),
+    file = paste(
+      "../Tables/csv/",
+      "most_sel_variables_table_hor_",
+      for_hor_can[i],
+      ".csv",
+      sep = ""
+    )
+  )
+}
+
+# Saving
+
+openxlsx::write.xlsx(
+  x = list_xlsx,
+  file = paste(
+    "../Tables/xlsx/",
+    "most_sel_variables_table",
+    ".xlsx",
+    sep = ""
+  ),
+  sheetName = paste("hor_", for_hor_can, sep = ""),
+  asTable = TRUE,
+  rowNames = TRUE,
+  colNames = TRUE
+)
+
+```
+
+## MCS
+
+```{r}
+#| echo: false
+
+library(MCS)
+
+f_mcs_table <- function(mcs_obj, model_name) {
+  obj_names <- mcs_obj@Info$model.names
+  obj_table_m <- mcs_obj@show[, "Rank_M", drop = FALSE]
+  obj_table_r <- mcs_obj@show[, "Rank_R", drop = FALSE]
+
+  res <- matrix(NA, nrow = length(model_name), ncol = 2)
+  colnames(res) <- c("Rank_M", "Rank_R")
+  rownames(res) <- model_name
+
+  res[obj_names, "Rank_M"] <- obj_table_m[obj_names, 1]
+  res[obj_names, "Rank_R"] <- obj_table_r[obj_names, 1]
+
+  eliminated_models <- which(!(model_name %in% obj_names))
+  res[eliminated_models, ] <- "E"
+
+  return(res)
+}
+
+mcs_table_m <- matrix(NA, nrow = length(ind_models), ncol = length(for_hor_can))
+rownames(mcs_table_m) <- paste("m", ind_models, sep = "")
+colnames(mcs_table_m) <- paste("h", for_hor_can, sep = "")
+mcs_table_r <- mcs_table_m
+
+for (i in seq_along(for_hor_can)) {
+
+  mcs_aux <- apply(
+    X = list_workspace[[i]]$forecast_mat,
+    MARGIN = 2,
+    FUN = LossLevel,
+    realized = list_workspace[[i]]$y_out,
+    which = "SE"
+  )
+
+  mcs_test <- MCSprocedure(
+    Loss = mcs_aux,
+    alpha = 0.15,
+    B = 5000,
+    cl = NULL,
+    ram.allocation = TRUE,
+    statistic = "Tmax",
+    k = 10,
+    verbose = FALSE
+  )
+
+  model_name <- colnames(list_workspace[[i]]$forecast_mat)
+  mcs_table_aux <- f_mcs_table(mcs_test, model_name)
+  mcs_table_m[, i] <- mcs_table_aux[, "Rank_M"]
+  mcs_table_r[, i] <- mcs_table_aux[, "Rank_R"]
+}
+
+kable(mcs_table_m, caption = "Rank M")
+kable(mcs_table_r, caption = "Rank R")
+
+# Saving
+
+openxlsx::write.xlsx(
+  x = list(
+    data.frame(mcs_table_m),
+    data.frame(mcs_table_r)
+  ),
+  file = paste(
+    "../Tables/xlsx/",
+    "mcs_tables",
+    ".xlsx",
+    sep = ""
+  ),
+  sheetName = paste("rank_", c("m", "r"), sep = ""),
+  asTable = TRUE,
+  rowNames = TRUE,
+  colNames = TRUE
+)
+
+
+write.csv(
+  x = mcs_table_m,
+  file = paste(
+    "../Tables/csv/",
+    "mcs_m_table",
+    ".csv",
+    sep = ""
+  )
+)
+
+write.csv(
+  x = mcs_table_r,
+  file = paste(
+    "../Tables/csv/",
+    "mcs_r_table",
+    ".csv",
+    sep = ""
+  )
+)
+
+```
+
+## GW test
+
+- Now, we apply the GW-test relative to the $m1$ model.
+  - Relative RMSE smaller than 1 and p-value smaller than 0.05 implies that the competing model statistically outperforms the benchmark model.
+  - Relative RMSE greater than 1 and p-value smaller than 0.05 implies that the benchmark model statistically outperforms its competitor model.
+  - A p-value greater than 0.05 means that the differences with respect to predictive performance between the benchmark and the competing model are not statistically significant.
+
+```{r, echo=FALSE}
+
+gw_p_value_mat <- matrix(
+  data = NA,
+  nrow = length(ind_models) - 1,
+  ncol = length(for_hor_can)
+)
+colnames(gw_p_value_mat) <- names(list_workspace)
+rownames(gw_p_value_mat) <- paste("m", 2:6, sep = "")
+rel_rmse_mat <- gw_p_value_mat
+
+for (i in seq_along(for_hor_can)) {
+
+  # Relative RMSE
+
+  rel_rmse_mat[, i] <- rmse_table[i, -1] / rmse_table[i, 1]
+
+  # GW-test
+
+  other_pred <- list_workspace[[i]]$forecast_mat[, -1] %>% as.matrix()
+  bench_pred <- list_workspace[[i]]$forecast_mat[, 1]
+  y_real <- list_workspace[[i]]$y_out
+
+  for (j in seq_len(length(ind_models) - 1)) {
+
+    gw_p_value_mat[j, i] <- gw.test(
+      x = bench_pred,
+      y = other_pred[, j],
+      p = y_real,
+      T = 721,
+      tau = 1,
+      method = "HAC",
+      alternative = "two.sided"
+    )$p.value
+  }
+}
+
+kable(
+  x = rel_rmse_mat,
+  caption = "RMSE - Relative to the $m1$ model",
+  digits = 3,
+  align = "c",
+  format.args = list(
+    nsmall = 3,
+    signif(3)
+  )
+)
+
+gw_p_value_table <- gw_p_value_mat %>%
+  round(4) %>%
+  format(
+    digits = 3,
+    nsmall = 3,
+    scientific = FALSE
+  ) %>%
+  f_color_aux(x = ., y = rel_rmse_mat)
+
+kable(
+  x = gw_p_value_table,
+  caption = "GW two-sided test (p-value) - Relative to the $m1$ model",
+  digits = 3,
+  align = "c"
+) %>%
+  add_footnote(
+    label = c(
+      text_spec(
+        x = "Competing model statistically outperforms the benchmark model.",
+        color = "blue"
+      ),
+      text_spec(
+        x = "The benchmark model statistically outperforms its competitor.",
+        color = "red"
+      ),
+      text_spec(
+        x = "The difference between the benchmark and the competing model are not statistically significant.",
+        color = "black"
+      )
+    ),
+    notation = "number",
+    threeparttable = TRUE
+  )
+
+
+
+kable(
+  x = gw_p_value_mat,
+  caption = "GW two-sided test (p-value) - Relative to the $m1$ model",
+  digits = 3,
+  align = "c",
+  format.args = list(
+    nsmall = 3,
+    signif(3)
+  )
+)
+
+# Saving
+
+openxlsx::write.xlsx(
+  x = list(
+    data.frame(rel_rmse_mat),
+    data.frame(gw_p_value_mat)
+  ),
+  file = paste(
+    "../Tables/xlsx/",
+    "gw_test_tables",
+    ".xlsx",
+    sep = ""
+  ),
+  sheetName = c("rel_rmse", "p_value"),
+  asTable = TRUE,
+  rowNames = TRUE,
+  colNames = TRUE
+)
+
+
+write.csv(
+  x = rel_rmse_mat,
+  file = paste(
+    "../Tables/csv/",
+    "gw_test_rel_rmse",
+    ".csv",
+    sep = ""
+  )
+)
+
+write.csv(
+  x = gw_p_value_mat,
+  file = paste(
+    "../Tables/csv/",
+    "gw_test_p_value",
+    ".csv",
+    sep = ""
+  )
+)
+```
